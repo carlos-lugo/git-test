@@ -77,6 +77,10 @@
 
     # 新しいプロファイルのID情報を確認
     aws sts get-caller-identity --profile fossy-dev
+
+    # Default config files location
+    ~/.aws/config
+    ~/.aws/credentials
     ```
 
 -----
