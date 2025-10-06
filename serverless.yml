@@ -1,0 +1,1438 @@
+---
+service: fossy-api
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, self:custom.defaultStage}
+  region: ${opt:region, self:custom.defaultRegion}
+  profile: asdf
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "dynamodb:BatchGet*"
+            - "dynamodb:DescribeStream"
+            - "dynamodb:DescribeTable"
+            - "dynamodb:Get*"
+            - "dynamodb:Query"
+            - "dynamodb:Scan"
+            - "dynamodb:BatchWrite*"
+            - "dynamodb:CreateTable"
+            - "dynamodb:Delete*"
+            - "dynamodb:Update*"
+            - "dynamodb:PutItem"
+          Resource:
+            - {Fn::Sub: "arn:aws:dynamodb:*:*:table/fossy_${self:provider.stage}"}
+            - {Fn::Sub: "arn:aws:dynamodb:*:*:table/fossy_${self:provider.stage}/index/secondaryIndex"}
+        - Effect: "Allow"
+          Action:
+            - "s3:ListBucket"
+          Resource:
+            - {Fn::Sub: "arn:aws:s3:::fossy-asdf-${self:provider.stage}"}
+        - Effect: "Allow"
+          Action:
+            - "s3:GetObject"
+            - "s3:PutObject"
+            - "s3:DeleteObject"
+            - "s3:PutObjectAcl"
+          Resource:
+            - {Fn::Sub: "arn:aws:s3:::fossy-asdf-${self:provider.stage}/*"}
+        - Effect: "Allow"
+          Action:
+            - "cognito-idp:AdminCreateUser"
+            - "cognito-idp:AdminDisableUser"
+            - "cognito-idp:AdminGetUser"
+            - "cognito-idp:AdminUpdateUserAttributes"
+            - "cognito-idp:ListUsers"
+          Resource:
+            - {Fn::GetAtt: [fossyUserPool, Arn]}
+        - Effect: "Allow"
+          Action:
+            - "SES:SendEmail"
+            - "SES:SendRawEmail"
+          Resource:
+            - "arn:aws:ses:ap-northeast-1:478424235332:identity/cclugo@gmail.com"
+        - Effect: "Allow"
+          Action:
+            - "secretsmanager:GetSecretValue"
+          Resource:
+            - "arn:aws:secretsmanager:ap-northeast-1:577963771433:secret:FossyPayjpSecretKey${self:provider.stage}*"
+  apiGateway:
+    shouldStartNameWithService: true
+  environment:
+    DYNAMODB_NAME:
+      Ref: fossyTable
+    S3_BUCKET:
+      Ref: fossyBucket
+    SERVICE_URL: ${self:custom.serviceUrl.${self:provider.stage}}
+    USER_POOL_ID:
+      Ref: fossyUserPool
+    SECRET_ID: "FossyPayjpSecretKey${self:provider.stage}"
+
+resources:
+  Resources:
+    fossyTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: {Fn::Sub: "fossy_${self:provider.stage}"}
+        KeySchema:
+          - AttributeName: partitionKey
+            KeyType: HASH
+          - AttributeName: sortKey
+            KeyType: RANGE
+        AttributeDefinitions:
+          - AttributeName: partitionKey
+            AttributeType: S
+          - AttributeName: sortKey
+            AttributeType: S
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+    fossyBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: {Fn::Sub: "fossy-asdf-${self:provider.stage}"}
+        CorsConfiguration:
+          CorsRules:
+            -
+              AllowedOrigins:
+                - "*"
+              AllowedMethods:
+                - GET
+              AllowedHeaders:
+                - "*"
+    fossyUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: {Fn::Sub: "fossy-${self:provider.stage}"}
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: false
+          InviteMessageTemplate:
+            EmailMessage: |
+              Fossyの管理者アカウントに招待されました。<br>
+              ログイン情報は以下です。<br>
+              <br>
+              ユーザーID {username}<br>
+              パスワード {####}<br>
+              <br>
+              下記のリンクから、Fossyにアクセスしてください。<br>
+              https://fossy.link/<br>
+              <br>
+            EmailSubject: "[Fossy] 管理者アカウントの招待"
+        AliasAttributes:
+          - email
+          - preferred_username
+        AutoVerifiedAttributes:
+          - email
+        EmailConfiguration:
+          EmailSendingAccount: "DEVELOPER"
+          SourceArn: "arn:aws:ses:ap-northeast-1:478424235332:identity/cclugo@gmail.com"
+        EmailVerificationMessage: |
+          検証コードは {####} です。<br>
+          <br>
+          画面に検証コードを入力し、サインアップまたはパスワード再設定を完了してください。<br>
+          <br>
+          検証コードの有効期間は 7日間 です。<br>
+          期間が過ぎた検証コードはご利用になれませんので、ご注意ください。<br>
+          <br>
+          ※このメールは、新規でアカウントを作成される方またはパスワードを再設定される方へお送りしております。<br>
+          <br>
+        EmailVerificationSubject: "[Fossy] 検証コードの送付"
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 8
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: false
+            RequireUppercase: false
+        Schema:
+          - Name: email
+            AttributeDataType: String
+            DeveloperOnlyAttribute: false
+            Mutable: true
+            Required: true
+          - Name: role
+            AttributeDataType: String
+            DeveloperOnlyAttribute: false
+            Mutable: true
+            Required: false
+          - Name: role-id
+            AttributeDataType: String
+            DeveloperOnlyAttribute: false
+            Mutable: true
+            Required: false
+        UsernameConfiguration:
+          CaseSensitive: false
+        UserPoolAddOns:
+          AdvancedSecurityMode: AUDIT
+    fossyUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: fossyAppClient
+        ExplicitAuthFlows:
+          - ALLOW_ADMIN_USER_PASSWORD_AUTH
+          - ALLOW_USER_SRP_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+        GenerateSecret: false
+        ReadAttributes:
+          - email
+          - "custom:role"
+          - "custom:role-id"
+        UserPoolId:
+          Ref: fossyUserPool
+        WriteAttributes:
+          - email
+          - "custom:role"
+          - "custom:role-id"
+    fossyApiAuthorizer:
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: fossyApiAuthorizer
+        AuthorizerResultTtlInSeconds: 3600
+        IdentitySource: method.request.header.Authorization
+        ProviderARNs:
+          - {Fn::GetAtt: [fossyUserPool, Arn]}
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        Type: COGNITO_USER_POOLS
+    # fossyApiDomainName:
+    #   Type: AWS::ApiGateway::DomainName
+    #   Properties:
+    #     # ACMは何度も作り直してはダメ。AWSにロックされてしまう。基本使い回し。
+    #     RegionalCertificateArn:
+    #       "arn:aws:acm:ap-northeast-1:577963771433:certificate/9f5485aa-9284-477b-b43c-785f02c344f7"
+    #     DomainName: {Fn::Sub: "api-${self:provider.stage}.fossy.link"}
+    #     EndpointConfiguration:
+    #       Types:
+    #         - REGIONAL
+    #     SecurityPolicy: TLS_1_2
+    # # 初回deploy時は一時的にコメントアウトしないと、deployが失敗する。
+    # fossyApiBasePathMapping:
+    #   Type: AWS::ApiGateway::BasePathMapping
+    #   Properties:
+    #     DomainName:
+    #       Ref: fossyApiDomainName
+    #     RestApiId:
+    #       Ref: ApiGatewayRestApi
+    #     Stage: ${self:provider.stage}
+    gatewayResponse401:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: UNAUTHORIZED
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        StatusCode: '401'
+    gatewayResponse500:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: AUTHORIZER_FAILURE
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        StatusCode: '500'
+
+custom:
+  defaultStage: stg
+  defaultProfile: default
+  defaultRegion: ap-northeast-1
+  contentEncoding:
+    contentCompression: 1024
+  prune:
+    automatic: true
+    number: 3
+  serviceUrl:
+    stg: "https://stg.fossy.link/"
+    pro: "https://fossy.link/"
+
+package:
+  patterns:
+    - 'commons/**'
+    - 'functions/**'
+    - 'fonts/**'
+    - 'node_modules/**'
+    - 'templates/**'
+    - '!events/**'
+
+functions:
+  add-application:
+    handler: functions/add-application/add-application.handler
+    events:
+      - http:
+          path: /applications
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-bankaccount:
+    handler: functions/add-bankaccount/add-bankaccount.handler
+    events:
+      - http:
+          path: /bankaccounts
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-certification:
+    handler: functions/add-certification/add-certification.handler
+    events:
+      - http:
+          path: /certifications
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-debuglog:
+    handler: functions/add-debuglog/add-debuglog.handler
+    events:
+      - http:
+          path: /debuglogs
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-exam:
+    handler: functions/add-exam/add-exam.handler
+    events:
+      - http:
+          path: /exams
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-examhold:
+    handler: functions/add-examhold/add-examhold.handler
+    events:
+      - http:
+          path: /examholds
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-examholdplace:
+    handler: functions/add-examholdplace/add-examholdplace.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/examholdplaces
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-examplace:
+    handler: functions/add-examplace/add-examplace.handler
+    events:
+      - http:
+          path: /examplaces
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-manager:
+    handler: functions/add-manager/add-manager.handler
+    events:
+      - http:
+          path: /managers
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-payment:
+    handler: functions/add-payment/add-payment.handler
+    events:
+      - http:
+          path: /payments
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-creditcard-payment:
+    handler: functions/add-creditcard-payment/add-creditcard-payment.handler
+    events:
+      - http:
+          path: payments/_creditcard
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-resign:
+    handler: functions/add-resign/add-resign.handler
+    events:
+      - http:
+          path: /resigns
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  add-student:
+    handler: functions/add-student/add-student.handler
+    events:
+      - http:
+          path: /students
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  batch-cert-renewal-end:
+    handler: functions/batch-cert-renewal-end/batch-cert-renewal-end.handler
+    events:
+      - schedule: cron(10 0 * * ? *)
+    timeout: 900
+  batch-cert-renewal-start:
+    handler: functions/batch-cert-renewal-start/batch-cert-renewal-start.handler
+    events:
+      - schedule: cron(0 0 * * ? *)
+    timeout: 900
+  bulk-cert-adding:
+    handler: functions/bulk-cert-adding/bulk-cert-adding.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/_bulkcertadding
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  bulk-cert-numbering:
+    handler: functions/bulk-cert-numbering/bulk-cert-numbering.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/_bulkcertnumbering
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  bulk-numbering:
+    handler: functions/bulk-numbering/bulk-numbering.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/_bulknumbering
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  bulk-placing:
+    handler: functions/bulk-placing/bulk-placing.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/_bulkplacing
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  count-student:
+    handler: functions/count-student/count-student.handler
+    events:
+      - http:
+          path: /students/_count
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-application:
+    handler: functions/delete-application/delete-application.handler
+    events:
+      - http:
+          path: /applications/{applicationId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-bankaccount:
+    handler: functions/delete-bankaccount/delete-bankaccount.handler
+    events:
+      - http:
+          path: /bankaccounts/{bankAccountId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-certification:
+    handler: functions/delete-certification/delete-certification.handler
+    events:
+      - http:
+          path: /certifications/{certificationId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-exam:
+    handler: functions/delete-exam/delete-exam.handler
+    events:
+      - http:
+          path: /exams/{examId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-examhold:
+    handler: functions/delete-examhold/delete-examhold.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-examholdplace:
+    handler: functions/delete-examholdplace/delete-examholdplace.handler
+    events:
+      - http:
+          path: examholds/{examHoldId}/examholdplaces/{examHoldPlaceId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-examplace:
+    handler: functions/delete-examplace/delete-examplace.handler
+    events:
+      - http:
+          path: /examplaces/{examPlaceId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-manager:
+    handler: functions/delete-manager/delete-manager.handler
+    events:
+      - http:
+          path: /managers/{managerId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-payment:
+    handler: functions/delete-payment/delete-payment.handler
+    events:
+      - http:
+          path: /payments/{paymentId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  delete-student:
+    handler: functions/delete-student/delete-student.handler
+    events:
+      - http:
+          path: /students/{studentId}
+          method: delete
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-application:
+    handler: functions/describe-application/describe-application.handler
+    events:
+      - http:
+          path: /applications/{applicationId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-bankaccount:
+    handler: functions/describe-bankaccount/describe-bankaccount.handler
+    events:
+      - http:
+          path: /bankaccounts/{bankAccountId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-certification:
+    handler: functions/describe-certification/describe-certification.handler
+    events:
+      - http:
+          path: /certifications/{certificationId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-exam:
+    handler: functions/describe-exam/describe-exam.handler
+    events:
+      - http:
+          path: /exams/{examId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-examhold:
+    handler: functions/describe-examhold/describe-examhold.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-examplace:
+    handler: functions/describe-examplace/describe-examplace.handler
+    events:
+      - http:
+          path: /examplaces/{examPlaceId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-manager:
+    handler: functions/describe-manager/describe-manager.handler
+    events:
+      - http:
+          path: /managers/{managerId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-payment:
+    handler: functions/describe-payment/describe-payment.handler
+    events:
+      - http:
+          path: /payments/{paymentId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-resign:
+    handler: functions/describe-resign/describe-resign.handler
+    events:
+      - http:
+          path: /resigns/{resignId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  describe-student:
+    handler: functions/describe-student/describe-student.handler
+    events:
+      - http:
+          path: /students/{studentId}
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  download-receipt:
+    handler: functions/download-receipt/download-receipt.handler
+    events:
+      - http:
+          path: /payments/receipts/_download
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  download-ticket:
+    handler: functions/download-ticket/download-ticket.handler
+    events:
+      - http:
+          path: /applications/tickets/_download
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  execute-resign:
+    handler: functions/execute-resign/execute-resign.handler
+    events:
+      - http:
+          path: /resigns/{resignId}/_execute
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  export-application:
+    handler: functions/export-application/export-application.handler
+    events:
+      - http:
+          path: /applications/_export
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  export-certification:
+    handler: functions/export-certification/export-certification.handler
+    events:
+      - http:
+          path: /certifications/_export
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  export-student:
+    handler: functions/export-student/export-student.handler
+    events:
+      - http:
+          path: /students/_export
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  import-add-application:
+    handler: functions/import-add-application/import-add-application.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/applications/_importaddapplication
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  import-certification:
+    handler: functions/import-certification/import-certification.handler
+    events:
+      - http:
+          path: /certifications/_import
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  import-update-application:
+    handler: functions/import-update-application/import-update-application.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/applications/_importupdateapplication
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 900
+  list-application:
+    handler: functions/list-application/list-application.handler
+    events:
+      - http:
+          path: /applications
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-bankaccount:
+    handler: functions/list-bankaccount/list-bankaccount.handler
+    events:
+      - http:
+          path: /bankaccounts
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-certification:
+    handler: functions/list-certification/list-certification.handler
+    events:
+      - http:
+          path: /certifications
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-exam:
+    handler: functions/list-exam/list-exam.handler
+    events:
+      - http:
+          path: /exams
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-examhold:
+    handler: functions/list-examhold/list-examhold.handler
+    events:
+      - http:
+          path: /examholds
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-examholdplace:
+    handler: functions/list-examholdplace/list-examholdplace.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/examholdplaces
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-examplace:
+    handler: functions/list-examplace/list-examplace.handler
+    events:
+      - http:
+          path: /examplaces
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-history:
+    handler: functions/list-history/list-history.handler
+    events:
+      - http:
+          path: /histories
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-manager:
+    handler: functions/list-manager/list-manager.handler
+    events:
+      - http:
+          path: /managers
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-payment:
+    handler: functions/list-payment/list-payment.handler
+    events:
+      - http:
+          path: /payments
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-update-history:
+    handler: functions/list-update-history/list-update-history.handler
+    events:
+      - http:
+          path: /update-histories
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-resign:
+    handler: functions/list-resign/list-resign.handler
+    events:
+      - http:
+          path: /resigns
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  list-student:
+    handler: functions/list-student/list-student.handler
+    events:
+      - http:
+          path: /students
+          method: get
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  notify-download-start:
+    handler: functions/notify-download-start/notify-download-start.handler
+    events:
+      - schedule: cron(0 1 * * ? *)
+    timeout: 900
+  notify-result-announcement:
+    handler: functions/notify-result-announcement/notify-result-announcement.handler
+    events:
+      - schedule: cron(0 2 * * ? *)
+    timeout: 900
+  forgot-username:
+    handler: functions/forgot-username/forgot-username.handler
+    events:
+      - http:
+          path: /students/_forgot-username
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+    timeout: 30
+  update-application:
+    handler: functions/update-application/update-application.handler
+    events:
+      - http:
+          path: /applications/{applicationId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-bankaccount:
+    handler: functions/update-bankaccount/update-bankaccount.handler
+    events:
+      - http:
+          path: /bankaccounts/{bankAccountId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-certification:
+    handler: functions/update-certification/update-certification.handler
+    events:
+      - http:
+          path: /certifications/{certificationId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-exam:
+    handler: functions/update-exam/update-exam.handler
+    events:
+      - http:
+          path: /exams/{examId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-examhold:
+    handler: functions/update-examhold/update-examhold.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-examholdplace:
+    handler: functions/update-examholdplace/update-examholdplace.handler
+    events:
+      - http:
+          path: /examholds/{examHoldId}/examholdplaces/{examHoldPlaceId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-examplace:
+    handler: functions/update-examplace/update-examplace.handler
+    events:
+      - http:
+          path: /examplaces/{examPlaceId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-manager:
+    handler: functions/update-manager/update-manager.handler
+    events:
+      - http:
+          path: /managers/{managerId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-payment:
+    handler: functions/update-payment/update-payment.handler
+    events:
+      - http:
+          path: /payments/{paymentId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-resign:
+    handler: functions/update-resign/update-resign.handler
+    events:
+      - http:
+          path: /resigns/{resignId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+  update-student:
+    handler: functions/update-student/update-student.handler
+    events:
+      - http:
+          path: /students/{studentId}
+          method: put
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - Authorization
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: fossyApiAuthorizer
+    timeout: 30
+
+plugins:
+  - serverless-api-compression
+  - serverless-prune-plugin
